@@ -476,6 +476,10 @@ def main(
 
     """
 
+    logger.info(
+        f"Will use the watcher dumped in {toml_path.name} (if exists)."
+    )
+
     if clean_run or not toml_path.exists():
         watcher = GlynWatcher(
             inpath=inpath,
@@ -540,6 +544,9 @@ def main(
             logger.info(f"Processing done. Left: {to_process.qsize()} tasks.")
 
         # Watch and process new folders as they come.
+        logger.info(
+            f"Will check for changes every {wait_time/60:.2f} minutes."
+        )
         while True:
             time.sleep(wait_time)
             logger.debug("Looking for changes.")
