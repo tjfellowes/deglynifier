@@ -1,6 +1,6 @@
 """A script to convert MIF NMR folder structure to useful data."""
 
-import json
+import argparse
 import logging
 import re
 import time
@@ -16,26 +16,6 @@ __version__ = "0.0.1"
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
-
-CLEAN_RUN = False
-MIF_FILES = Path.cwd() / "MIF_NMR"
-AIC_FILES = Path.cwd() / "AIC_NMR"
-DUMP_PATH = Path.cwd() / "deglynifier_dump.toml"
-LOG_PATH = Path.cwd() / "deglynifier.log"
-WAIT_TIME = 60
-LOG_LEVEL = "INFO"
-START_TIME = datetime.fromisoformat("2024-01-01")
-END_TIME = datetime.fromisoformat("2024-06-12").replace(
-    hour=23, minute=59, second=59
-)
-
-logging.basicConfig(
-    level=LOG_LEVEL,
-    filename="deglynifier.log",
-    filemode="w",
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%d-%b-%y %H:%M:%S",
-)
 
 
 class NMRFolder:
@@ -103,17 +83,21 @@ class NMRFolder:
             raise (AttributeError("Experiment name not found."))
 
     @classmethod
-    def from_mif(cls, mif_path: Path):
+    def from_mif(
+        cls,
+        mif_path: Path,
+        aic_dir: Path,
+    ):
         """Initialise NMRFolder from MIF folder path."""
         nmr_sample = NMRFolder.get_sample_name(mif_path)
         experiment = NMRFolder.get_experiment_name(mif_path)
 
         expno = 10
-        for nmr_exp in (AIC_FILES / nmr_sample).glob("*"):
+        for nmr_exp in (aic_dir / nmr_sample).glob("*"):
             if nmr_exp.is_dir():
                 expno = int(nmr_exp.name) + 10
 
-        aic_path = AIC_FILES / nmr_sample / f"{expno}"
+        aic_path = aic_dir / nmr_sample / f"{expno}"
 
         if not aic_path.exists():
             copytree(mif_path, aic_path)
@@ -166,17 +150,6 @@ class NMRFolder:
         with open(toml_path, "a") as f:
             f.write(new_exp)
 
-    def to_dict(self):
-        """Get NMRFolder as a serialisable dictionary."""
-        folder_dict = {
-            "nmr_sample": self.nmr_sample,
-            "experiment": self.experiment,
-            "mif_path": f"{self.mif_path}",
-            "aic_path": f"{self.aic_path}",
-        }
-
-        return folder_dict
-
     def to_toml_string(self):
         """Get NMRFolder as a serialisable TOML string."""
         toml_string = "\n".join(
@@ -198,47 +171,48 @@ class GlynWatcher:
 
     def __init__(
         self,
+        inpath: Path,
+        outpath: Path,
+        toml_path: Path,
         last_timestamp: float = 0,
         processed_folders: Optional[list[NMRFolder]] = None,
     ):
         """Initialise the watcher."""
+        self.inpath = inpath
+        self.outpath = outpath
+        self.toml_path = toml_path
         self.last_timestamp = last_timestamp
         if processed_folders is not None:
             self.processed_folders = processed_folders
         else:
             self.processed_folders = []
 
-    @classmethod
-    def from_json(cls, json_path):
-        """Initialise the watcher from a JSON dump."""
-        try:
-            with open(json_path, "r") as f:
-                json_data = json.load(f)
-            watcher = cls(last_timestamp=json_data["last_timestamp"])
-
-            for folder in json_data["processed_folders"]:
-                nmr_folder = NMRFolder(
-                    nmr_sample=folder["nmr_sample"],
-                    experiment=folder["experiment"],
-                    mif_path=Path(folder["mif_path"]),
-                    aic_path=Path(folder["mif_path"]),
+        if not toml_path.exists():
+            with open(toml_path, mode="a") as f:
+                toml_str = "\n".join(
+                    [
+                        "[watcher]",
+                        f'inpath = "{str(inpath).replace("\\", "/")}"',
+                        f'outpath = "{str(outpath).replace("\\", "/")}"',
+                    ]
                 )
-                watcher.processed_folders.append(nmr_folder)
-
-        except Exception:
-            logger.error("JSON decoding failed: starting from scratch!")
-            watcher = cls()
-
-        return watcher
+                f.write(toml_str + "\n\n")
 
     @classmethod
-    def from_toml(cls, toml_path):
+    def from_toml(
+        cls,
+        toml_path: Path,
+    ) -> "GlynWatcher":
         """Initialise the watcher from a TOML dump."""
         try:
             with open(toml_path, "rb") as f:
                 toml_data = tomllib.load(f)
 
-            watcher = cls()
+            watcher = cls(
+                inpath=Path(toml_data["watcher"]["inpath"]),
+                outpath=Path(toml_data["watcher"]["outpath"]),
+                toml_path=toml_path,
+            )
 
             for folder in toml_data["processed"]:
                 nmr_folder = NMRFolder(
@@ -256,20 +230,36 @@ class GlynWatcher:
 
         except Exception:
             logger.error("TOML decoding failed: starting from scratch!")
-            watcher = cls()
+            watcher = cls(
+                inpath=Path("MIF_NMR"),
+                outpath=Path("AIC_NMR"),
+                toml_path=toml_path,
+            )
 
         return watcher
 
-    def to_dict(self):
-        """Get the watcher status as a dictionary."""
-        processed_folders = [
-            folder.to_dict() for folder in self.processed_folders
-        ]
-        watcher_dict = {
-            "last_timestamp": self.last_timestamp,
-            "processed_folders": processed_folders,
-        }
-        return watcher_dict
+    def process_folder(
+        self,
+        nmr_folder_path: Path,
+    ) -> None:
+        """
+        Process an NMR folder.
+
+        Parameters
+        ----------
+        NMRFolder
+            The NMR folder to be processed.
+
+        """
+        nmr_folder = NMRFolder.from_mif(
+            mif_path=nmr_folder_path,
+            aic_dir=self.outpath,
+        )
+        self.last_timestamp = self.inpath.stat().st_ctime
+        logger.debug(f"Last timestamp is: {self.last_timestamp}.")
+        self.processed_folders.append(nmr_folder)
+        with open(self.toml_path, mode="a") as f:
+            f.write(nmr_folder.to_toml_string() + "\n\n")
 
     def to_toml(
         self,
@@ -282,40 +272,130 @@ class GlynWatcher:
         path.write_text(toml_string)
 
 
-def main():
+def parse_arguments() -> argparse.Namespace:
+    """Parse CLI arguments."""
+
+    parser = argparse.ArgumentParser(
+        prog="Deglynifier",
+        description="Converts MIF NMR folder tree into sample-based tree.",
+        epilog="For better integration with electronic lab notebooks.",
+    )
+
+    parser.add_argument(
+        "inpath",
+        type=Path,
+        help="A path to the useless NMR data structure.",
+    )
+
+    parser.add_argument(
+        "outpath",
+        type=Path,
+        help="A path to the output data directory.",
+    )
+
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="A clean run (not using any information about the former state).",
+    )
+
+    parser.add_argument(
+        "-t",
+        "--toml",
+        type=Path,
+        default=Path("deglynifier_dump.toml"),
+        help="A path to the TOML processed data information dump.",
+    )
+
+    parser.add_argument(
+        "-l",
+        "--log",
+        type=Path,
+        default=Path("deglynifier.log"),
+        help="A path to the log file.",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Make the log files more verbose.",
+    )
+
+    parser.add_argument(
+        "-w",
+        "--wait",
+        type=int,
+        default=120,
+        help="Time in seconds to wait between re-checking the folder.",
+    )
+
+    parser.add_argument(
+        "--start",
+        type=datetime.fromisoformat,
+        default=datetime.fromisoformat("2010-01-01"),
+        help="Start date for folder conversion (YYYY-MM-DD).",
+    )
+
+    parser.add_argument(
+        "--end",
+        type=lambda x: datetime.fromisoformat(x).replace(
+            hour=23, minute=59, second=59
+        ),
+        default=datetime.today().replace(hour=23, minute=59, second=59),
+        help="End date for folder conversion (YYYY-MM-DD).",
+    )
+
+    return parser.parse_args()
+
+
+def main(
+    inpath,
+    outpath,
+    toml_path,
+    wait_time,
+    start_date,
+    end_date,
+    clean_run,
+) -> None:
     """Execute script."""
 
-    if DUMP_PATH.exists() or not CLEAN_RUN:
-        watcher = GlynWatcher.from_toml(DUMP_PATH)
+    if clean_run or not toml_path.exists():
+        watcher = GlynWatcher(
+            inpath=inpath,
+            outpath=outpath,
+            toml_path=toml_path,
+        )
+        logger.info("Empty watcher created.")
+
+    else:
+        watcher = GlynWatcher.from_toml(toml_path)
         logger.info("Watcher loaded.")
         logger.info(
             "Latest processed folder is from "
-            f"{datetime.fromtimestamp(watcher.last_timestamp).strftime("%c")}."
+            f"{datetime.fromtimestamp(watcher.last_timestamp).strftime('%c')}."
         )
-    else:
-        watcher = GlynWatcher()
-        logger.info("Empty watcher created.")
 
     try:
         # Identify changes since running the script last time.
         logger.info("Identifying data folders in MIF_FILES.")
-        logger.debug(f"START_TIME is set at {START_TIME.timestamp()}.")
-        logger.debug(f"END_TIME is set at {END_TIME.timestamp()}.")
+        logger.debug(f"Start date is set at {start_date.timestamp()}.")
+        logger.debug(f"End date is set at {end_date.timestamp()}.")
 
         mif_files = []
-        for folder in MIF_FILES.glob("*/*"):
+        for folder in inpath.glob("*/*"):
             logger.debug(f"Found {folder.parent.name}/{folder.name}.")
             timestamp = folder.stat().st_ctime
             ctime = datetime.fromtimestamp(watcher.last_timestamp)
-            logger.debug(f"Folder creation date is {ctime.strftime("%c")}.")
+            logger.debug(f"Folder creation date is {ctime.strftime('%c')}.")
 
             if timestamp <= watcher.last_timestamp:
                 logger.debug("Folder predates latest processed folder.")
 
-            elif START_TIME.timestamp() > timestamp:
+            elif start_date.timestamp() > timestamp:
                 logger.debug("Folder is older than the desired start date.")
 
-            elif END_TIME.timestamp() < timestamp:
+            elif end_date.timestamp() < timestamp:
                 logger.debug("Folder is newer than the desired end date.")
 
             else:
@@ -326,7 +406,7 @@ def main():
         # Process old folders.
         logger.info("Processing folders since last run.")
 
-        to_process = Queue()
+        to_process: Queue[Path] = Queue()
         for folder in mif_files:
             to_process.put(folder)
 
@@ -335,20 +415,15 @@ def main():
         while not to_process.empty():
             mif_path = to_process.get()
             logger.info(f"Processing {mif_path.parent.name}/{mif_path.name}.")
-            nmr_folder = NMRFolder.from_mif(mif_path=mif_path)
-            watcher.last_timestamp = mif_path.stat().st_ctime
-            logger.debug(f"Last timestamp is: {watcher.last_timestamp}.")
-            watcher.processed_folders.append(nmr_folder)
+            watcher.process_folder(nmr_folder_path=mif_path)
             to_process.task_done()
-            with open(DUMP_PATH, mode="a") as f:
-                f.write(nmr_folder.to_toml_string() + "\n\n")
             logger.info(f"Processing done. Left: {to_process.qsize()} tasks.")
 
         # Watch and process new folders as they come.
         while True:
-            time.sleep(WAIT_TIME)
+            time.sleep(wait_time)
             logger.debug("Looking for changes.")
-            for folder in MIF_FILES.glob("*/*"):
+            for folder in inpath.glob("*/*"):
                 if folder.stat().st_ctime > watcher.last_timestamp:
                     logger.info(
                         "New folder identified: "
@@ -359,20 +434,36 @@ def main():
             while not to_process.empty():
                 mif_path = to_process.get()
                 logger.info(
-                    f"Processing {mif_path.parent.name}/{mif_path.name}"
+                    f"Processing {mif_path.parent.name}/{mif_path.name}."
                 )
-                nmr_folder = NMRFolder.from_mif(mif_path=mif_path)
-                watcher.last_timestamp = mif_path.stat().st_ctime
-                logger.debug(f"Last timestamp is: {watcher.last_timestamp}.")
-                watcher.processed_folders.append(nmr_folder)
+                watcher.process_folder(nmr_folder_path=mif_path)
                 to_process.task_done()
-                with open(DUMP_PATH, mode="a") as f:
-                    f.write(nmr_folder.to_toml_string() + "\n\n")
                 logger.info("Folder processing finished.")
+
+    except KeyboardInterrupt:
+        pass
 
     finally:
         logger.info("Process stopped.")
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_arguments()
+
+    logging.basicConfig(
+        level="DEBUG" if args.verbose else "INFO",
+        filename=args.log,
+        filemode="w",
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%d-%b-%y %H:%M:%S",
+    )
+
+    main(
+        inpath=args.inpath,
+        outpath=args.outpath,
+        toml_path=args.toml,
+        wait_time=args.wait,
+        start_date=args.start,
+        end_date=args.end,
+        clean_run=args.clean,
+    )
