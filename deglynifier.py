@@ -4,13 +4,12 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
 from shutil import copytree
-
-import tomllib
+from typing import Optional
 
 __author__ = "Filip T. Szczypiński"
 __version__ = "0.0.1"
@@ -39,7 +38,6 @@ logging.basicConfig(
 )
 
 
-@dataclass
 class NMRFolder:
     """A class containing basic NMR folder information."""
 
@@ -51,6 +49,7 @@ class NMRFolder:
         aic_path: Path,
         timestamp: float,
     ):
+        """Initialise NMRFolder."""
         self.nmr_sample = nmr_sample
         self.experiment = experiment
         self.mif_path = mif_path
@@ -105,6 +104,7 @@ class NMRFolder:
 
     @classmethod
     def from_mif(cls, mif_path: Path):
+        """Initialise NMRFolder from MIF folder path."""
         nmr_sample = NMRFolder.get_sample_name(mif_path)
         experiment = NMRFolder.get_experiment_name(mif_path)
 
@@ -136,7 +136,8 @@ class NMRFolder:
         self,
         expno: int,
     ) -> None:
-        """Append exposition number into sample summary TOML.
+        """
+        Append exposition number into sample summary TOML.
 
         Parameters
         ----------
@@ -166,6 +167,7 @@ class NMRFolder:
             f.write(new_exp)
 
     def to_dict(self):
+        """Get NMRFolder as a serialisable dictionary."""
         folder_dict = {
             "nmr_sample": self.nmr_sample,
             "experiment": self.experiment,
@@ -176,6 +178,7 @@ class NMRFolder:
         return folder_dict
 
     def to_toml_string(self):
+        """Get NMRFolder as a serialisable TOML string."""
         toml_string = "\n".join(
             [
                 "[[processed]]",
@@ -196,13 +199,18 @@ class GlynWatcher:
     def __init__(
         self,
         last_timestamp: float = 0,
-        processed_folders: list[NMRFolder] = [],
+        processed_folders: Optional[list[NMRFolder]] = None,
     ):
+        """Initialise the watcher."""
         self.last_timestamp = last_timestamp
-        self.processed_folders = processed_folders
+        if processed_folders is not None:
+            self.processed_folders = processed_folders
+        else:
+            self.processed_folders = []
 
     @classmethod
     def from_json(cls, json_path):
+        """Initialise the watcher from a JSON dump."""
         try:
             with open(json_path, "r") as f:
                 json_data = json.load(f)
@@ -225,6 +233,7 @@ class GlynWatcher:
 
     @classmethod
     def from_toml(cls, toml_path):
+        """Initialise the watcher from a TOML dump."""
         try:
             with open(toml_path, "rb") as f:
                 toml_data = tomllib.load(f)
@@ -252,6 +261,7 @@ class GlynWatcher:
         return watcher
 
     def to_dict(self):
+        """Get the watcher status as a dictionary."""
         processed_folders = [
             folder.to_dict() for folder in self.processed_folders
         ]
@@ -265,6 +275,7 @@ class GlynWatcher:
         self,
         path: Path,
     ) -> None:
+        """Get the watcher status as a TOML string."""
         toml_string = "\n\n".join(
             [folder.to_toml_string() for folder in self.processed_folders]
         )
