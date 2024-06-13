@@ -92,14 +92,22 @@ class NMRFolder:
         if m is not None:
             sample_id = m.group(1).strip()
             if sample_id == "":
+                logger.error("Unknown sample ID: checking NAME field.")
+                m = re.search(
+                    r"Name\s*[:-]{0,2}(.*):\s*Sample ID", orig_path.read_text()
+                )
+                if m is not None:
+                    if (sample_id := m.group(1).strip()) != "":
+                        logger.info(f"Using the NAME field ({sample_id}).")
+                        return sample_id
                 logger.error("Unknown sample ID: saving as UNKNOWN.")
                 return "UNKNOWN"
             else:
                 return sample_id
 
         else:
-            logger.critical("Sample name not found - aborted!")
-            raise (AttributeError("Sample name not found."))
+            logger.error("Unknown sample ID: saving as UNKNOWN.")
+            return "UNKNOWN"
 
     @staticmethod
     def get_experiment_name(
