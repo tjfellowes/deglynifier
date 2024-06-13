@@ -215,13 +215,15 @@ class NMRFolder:
 
     def to_toml_string(self):
         """Get NMRFolder as a serialisable TOML string."""
+        inpath = str(self.inpath).replace("\\", "/")
+        outpath = str(self.outpath).replace("\\", "/")
         toml_string = "\n".join(
             [
                 "[[processed]]",
                 f'nmr_sample = "{self.nmr_sample}"',
                 f'experiment = "{self.experiment}"',
-                f'inpath = "{str(self.inpath).replace("\\", "/")}"',
-                f'outpath = "{str(self.outpath).replace("\\", "/")}"',
+                f'inpath = "{inpath}"',
+                f'outpath = "{outpath}"',
                 f"timestamp = {self.timestamp}",
             ]
         )
