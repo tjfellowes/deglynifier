@@ -287,13 +287,15 @@ class GlynWatcher:
         else:
             self.processed_folders = []
 
+        inpath_str = str(self.inpath).replace("\\", "/")
+        outpath_str = str(self.outpath).replace("\\", "/")
         if not toml_path.exists():
             with open(toml_path, mode="a") as f:
                 toml_str = "\n".join(
                     [
                         "[watcher]",
-                        f'inpath = "{str(inpath).replace("\\", "/")}"',
-                        f'outpath = "{str(outpath).replace("\\", "/")}"',
+                        f'inpath = "{inpath_str}"',
+                        f'outpath = "{outpath_str}"',
                     ]
                 )
                 f.write(toml_str + "\n\n")
@@ -303,8 +305,8 @@ class GlynWatcher:
                 toml_str = "\n".join(
                     [
                         "[watcher]",
-                        f'inpath = "{str(inpath).replace("\\", "/")}"',
-                        f'outpath = "{str(outpath).replace("\\", "/")}"',
+                        f'inpath = "{inpath_str}"',
+                        f'outpath = "{outpath_str}"',
                     ]
                 )
                 f.write(toml_str + "\n\n")
