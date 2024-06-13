@@ -90,7 +90,12 @@ class NMRFolder:
         m = re.search(r"Sample ID\s*[:-]{0,2}(.*)", orig_path.read_text())
 
         if m is not None:
-            return m.group(1).strip()
+            sample_id = m.group(1).strip()
+            if sample_id == "":
+                logger.error("Unknown sample ID: saving as UNKNOWN.")
+                return "UNKNOWN"
+            else:
+                return sample_id
 
         else:
             logger.critical("Sample name not found - aborted!")
@@ -161,7 +166,7 @@ class NMRFolder:
             experiment=experiment,
             inpath=inpath,
             outpath=outpath,
-            timestamp=inpath.stat().st_ctime,
+            timestamp=inpath.stat().st_mtime,
         )
 
         nmr_folder.append_expno_info(
@@ -242,6 +247,7 @@ class GlynWatcher:
         toml_path: Path,
         last_timestamp: float = 0,
         processed_folders: Optional[list[NMRFolder]] = None,
+        clean: Optional[bool] = False,
     ):
         """
         Initialise the watcher.
@@ -258,6 +264,8 @@ class GlynWatcher:
             A timestamp of the last processed NMR folder.
         processed_folders
             A list of already processed folders.
+        clean
+            If True, will overwrite the watcher TOML log.
 
         """
         self.inpath = inpath
@@ -271,6 +279,17 @@ class GlynWatcher:
 
         if not toml_path.exists():
             with open(toml_path, mode="a") as f:
+                toml_str = "\n".join(
+                    [
+                        "[watcher]",
+                        f'inpath = "{str(inpath).replace("\\", "/")}"',
+                        f'outpath = "{str(outpath).replace("\\", "/")}"',
+                    ]
+                )
+                f.write(toml_str + "\n\n")
+
+        if clean:
+            with open(toml_path, mode="w") as f:
                 toml_str = "\n".join(
                     [
                         "[watcher]",
@@ -351,7 +370,7 @@ class GlynWatcher:
             inpath=nmr_folder_path,
             outdir=self.outpath,
         )
-        self.last_timestamp = self.inpath.stat().st_ctime
+        self.last_timestamp = self.inpath.stat().st_mtime
         logger.debug(f"Last timestamp is: {self.last_timestamp}.")
         self.processed_folders.append(nmr_folder)
         with open(self.toml_path, mode="a") as f:
@@ -485,6 +504,7 @@ def main(
             inpath=inpath,
             outpath=outpath,
             toml_path=toml_path,
+            clean=True,
         )
         logger.info("Empty watcher created.")
 
@@ -509,7 +529,7 @@ def main(
         infiles = []
         for folder in inpath.glob("*/*"):
             logger.debug(f"Found {folder.parent.name}/{folder.name}.")
-            timestamp = folder.stat().st_ctime
+            timestamp = folder.stat().st_mtime
             ctime = datetime.fromtimestamp(watcher.last_timestamp)
             logger.debug(f"Folder creation date is {ctime.strftime('%c')}.")
 
@@ -525,7 +545,7 @@ def main(
             else:
                 infiles.append(folder)
                 logger.debug(f"Added {folder.parent.name}/{folder.name}.")
-        infiles = sorted(infiles, key=lambda x: x.stat().st_ctime)
+        infiles = sorted(infiles, key=lambda x: x.stat().st_mtime)
 
         # Process old folders.
         logger.info("Processing folders since last run.")
@@ -551,7 +571,7 @@ def main(
             time.sleep(wait_time)
             logger.debug("Looking for changes.")
             for folder in inpath.glob("*/*"):
-                if folder.stat().st_ctime > watcher.last_timestamp:
+                if folder.stat().st_mtime > watcher.last_timestamp:
                     logger.info(
                         "New folder identified: "
                         f"{folder.parent.name}/{folder.name}"
