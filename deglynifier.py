@@ -12,10 +12,28 @@ from shutil import copytree
 from typing import Optional
 
 __author__ = "Filip T. Szczypiński"
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
+
+
+def strip_illegal_characters(string: str) -> str:
+    """
+    Remove characters that cannot form a path.
+
+    Parameters
+    ----------
+    string
+        String to be corrected.
+
+    Returns
+    -------
+        Corrected string with no illegal characters.
+
+    """
+    translation_table = str.maketrans("/$:?|'\\", "_______")
+    return string.translate(translation_table)
 
 
 class NMRFolder:
@@ -44,7 +62,7 @@ class NMRFolder:
         inpath: Path,
         outpath: Path,
         timestamp: float,
-    ):
+    ) -> None:
         """
         Initialise NMR data.
 
@@ -76,7 +94,10 @@ class NMRFolder:
         Get NMR sample name.
 
         Sample names are stored in the TopSpin's `orig` file, as:
-        Name :-RESEARCHER_NAME   :  Sample ID :-SAMPLE_NAME
+        Name :-RESEARCHER_NAME   :  Sample ID :-SAMPLE_NAME. If it cannot find
+        the SAMPLE_NAME, then it tries to use RESEARCHER_NAME. If that is also
+        empty - or any other error has occurred here - the sample name will
+        be set to UNKNOWN.
 
         Parameters
         ----------
@@ -84,30 +105,45 @@ class NMRFolder:
             Path to the TopSpin NMR data folder.
 
         """
-
+        sample_id = "UNKNOWN"
         orig_path = nmr_path / "orig"
 
-        m = re.search(r"Sample ID\s*[:-]{0,2}(.*)", orig_path.read_text())
+        logging.debug(f"Trying to open {orig_path} to find the sample ID.")
 
-        if m is not None:
-            sample_id = m.group(1).strip()
-            if sample_id == "":
-                logger.error("Unknown sample ID: checking NAME field.")
-                m = re.search(
-                    r"Name\s*[:-]{0,2}(.*):\s*Sample ID", orig_path.read_text()
-                )
-                if m is not None:
-                    if (sample_id := m.group(1).strip()) != "":
-                        logger.info(f"Using the NAME field ({sample_id}).")
-                        return sample_id
-                logger.error("Unknown sample ID: saving as UNKNOWN.")
-                return "UNKNOWN"
-            else:
-                return sample_id
+        try:
+            with orig_path.open() as file:
+                for line in file:
+                    m = re.search(r"Sample ID\s*[:-]{0,2}(.*)", line)
+                    if m is not None:
+                        sample_id = m.group(1).strip()
+                        if sample_id:
+                            break
 
-        else:
-            logger.error("Unknown sample ID: saving as UNKNOWN.")
+                        else:
+                            logger.error(
+                                "Unknown sample ID: checking NAME field."
+                            )
+                            m = re.search(
+                                r"Name\s*[:-]{0,2}(.*):\s*Sample ID",
+                                line,
+                            )
+                            if m is not None:
+                                sample_id = m.group(1).strip()
+                                if sample_id:
+                                    logger.info(
+                                        f"Using the NAME field ({sample_id})."
+                                    )
+                                else:
+                                    logger.error(
+                                        "Unknown sample ID: saving as UNKNOWN."
+                                    )
+                                    sample_id = "UNKNOWN"
+                                break
+        except Exception:
+            logger.error("Error reading sample name: saving as UNKNOWN.")
             return "UNKNOWN"
+
+        return strip_illegal_characters(sample_id)
 
     @staticmethod
     def get_experiment_name(
@@ -128,14 +164,21 @@ class NMRFolder:
 
         acqus_path = nmr_path / "acqus"
 
-        m = re.search(r"##\$EXP= <(.*)>", acqus_path.read_text())
+        try:
+            with acqus_path.open() as file:
+                for line in file:
+                    m = re.search(r"##\$EXP= <(.*)>", line)
+                    if m is not None:
+                        exp_name = m.group(1)
+                        logger.info(f"Experiment type is: {exp_name}.")
+                        return strip_illegal_characters(exp_name)
 
-        if m is not None:
-            return m.group(1)
+            logger.error("Experiment name not found - aborted!")
+            return "UNKNOWN"
 
-        else:
-            logger.critical("Experiment name not found - aborted!")
-            raise (AttributeError("Experiment name not found."))
+        except Exception:
+            logger.error("Error reading experiment name: saving as UNKNOWN.")
+            return "UNKNOWN"
 
     @classmethod
     def from_mif(
@@ -213,7 +256,7 @@ class NMRFolder:
         with open(toml_path, "a") as f:
             f.write(new_exp)
 
-    def to_toml_string(self):
+    def to_toml_string(self) -> str:
         """Get NMRFolder as a serialisable TOML string."""
         inpath = str(self.inpath).replace("\\", "/")
         outpath = str(self.outpath).replace("\\", "/")
@@ -245,8 +288,6 @@ class GlynWatcher:
         A path to dump file with the watcher status.
     last_timestamp
         A timestamp of the last processed NMR folder.
-    processed_folders
-        A list of already processed folders.
 
     """
 
@@ -256,9 +297,8 @@ class GlynWatcher:
         outpath: Path,
         toml_path: Path,
         last_timestamp: float = 0,
-        processed_folders: Optional[list[NMRFolder]] = None,
         clean: Optional[bool] = False,
-    ):
+    ) -> None:
         """
         Initialise the watcher.
 
@@ -282,10 +322,6 @@ class GlynWatcher:
         self.outpath = outpath
         self.toml_path = toml_path
         self.last_timestamp = last_timestamp
-        if processed_folders is not None:
-            self.processed_folders = processed_folders
-        else:
-            self.processed_folders = []
 
         inpath_str = str(self.inpath).replace("\\", "/")
         outpath_str = str(self.outpath).replace("\\", "/")
@@ -341,19 +377,11 @@ class GlynWatcher:
                 toml_path=toml_path,
             )
 
-            for folder in toml_data["processed"]:
-                nmr_folder = NMRFolder(
-                    nmr_sample=folder["nmr_sample"],
-                    experiment=folder["experiment"],
-                    inpath=Path(folder["inpath"]),
-                    outpath=Path(folder["outpath"]),
-                    timestamp=folder["timestamp"],
-                )
-                watcher.processed_folders.append(nmr_folder)
-
             watcher.last_timestamp = max(
                 folder["timestamp"] for folder in toml_data["processed"]
             )
+
+            del toml_data
 
         except Exception:
             logger.error("TOML decoding failed: starting from scratch!")
@@ -382,21 +410,10 @@ class GlynWatcher:
             inpath=nmr_folder_path,
             outdir=self.outpath,
         )
-        self.last_timestamp = self.inpath.stat().st_mtime
+        self.last_timestamp = nmr_folder_path.stat().st_mtime
         logger.debug(f"Last timestamp is: {self.last_timestamp}.")
-        self.processed_folders.append(nmr_folder)
         with open(self.toml_path, mode="a") as f:
             f.write(nmr_folder.to_toml_string() + "\n\n")
-
-    def to_toml(
-        self,
-        path: Path,
-    ) -> None:
-        """Get the watcher status as a TOML string."""
-        toml_string = "\n\n".join(
-            [folder.to_toml_string() for folder in self.processed_folders]
-        )
-        path.write_text(toml_string)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -539,7 +556,7 @@ def main(
         logger.debug(f"End date is set at {end_date.timestamp()}.")
 
         infiles = []
-        for folder in inpath.glob("*/*"):
+        for folder in watcher.inpath.glob("*/*"):
             logger.debug(f"Found {folder.parent.name}/{folder.name}.")
             timestamp = folder.stat().st_mtime
             ctime = datetime.fromtimestamp(watcher.last_timestamp)
@@ -556,7 +573,9 @@ def main(
 
             else:
                 infiles.append(folder)
-                logger.debug(f"Added {folder.parent.name}/{folder.name}.")
+                logger.info(
+                    f"Added {folder.parent.name}/{folder.name} to the stack."
+                )
         infiles = sorted(infiles, key=lambda x: x.stat().st_mtime)
 
         # Process old folders.
@@ -566,12 +585,16 @@ def main(
         for folder in infiles:
             to_process.put(folder)
 
+        del infiles
+
         logger.info(f"Will process {to_process.qsize()} folders.")
 
         while not to_process.empty():
-            inpath = to_process.get()
-            logger.info(f"Processing {inpath.parent.name}/{inpath.name}.")
-            watcher.process_folder(nmr_folder_path=inpath)
+            process_path = to_process.get()
+            logger.info(
+                f"Processing {process_path.parent.name}/{process_path.name}."
+            )
+            watcher.process_folder(nmr_folder_path=process_path)
             to_process.task_done()
             logger.info(f"Processing done. Left: {to_process.qsize()} tasks.")
 
@@ -582,7 +605,7 @@ def main(
         while True:
             time.sleep(wait_time)
             logger.debug("Looking for changes.")
-            for folder in inpath.glob("*/*"):
+            for folder in watcher.inpath.glob("*/*"):
                 if folder.stat().st_mtime > watcher.last_timestamp:
                     logger.info(
                         "New folder identified: "
@@ -591,9 +614,11 @@ def main(
                     to_process.put(folder)
 
             while not to_process.empty():
-                inpath = to_process.get()
-                logger.info(f"Processing {inpath.parent.name}/{inpath.name}.")
-                watcher.process_folder(nmr_folder_path=inpath)
+                proc_path = to_process.get()
+                logger.info(
+                    f"Processing {proc_path.parent.name}/{proc_path.name}."
+                )
+                watcher.process_folder(nmr_folder_path=proc_path)
                 to_process.task_done()
                 logger.info("Folder processing finished.")
 
