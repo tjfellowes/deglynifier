@@ -162,3 +162,5 @@ cython_debug/
 #.idea/
 
 .vscode/
+deglynifier_dump.toml
+test_*

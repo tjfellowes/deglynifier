@@ -5,10 +5,11 @@ import logging
 import re
 import time
 import tomllib
+from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
-from shutil import copytree
+from shutil import copytree, copyfile
 from typing import Optional
 
 __author__ = "Filip T. Szczypiński"
@@ -36,7 +37,109 @@ def strip_illegal_characters(string: str) -> str:
     return string.translate(translation_table)
 
 
-class NMRFolder:
+class ExptFile(ABC):
+    """
+    Abstract base class for experiment files.
+    """
+
+    @abstractmethod
+    def to_toml_string(self) -> str:
+        """Get the object as a serialisable TOML string."""
+
+    @classmethod
+    @abstractmethod
+    def copy_from_instrument(cls, inpath: Path, outdir: Path) -> "ExptFile":
+        """Initialise the object from the MIF NMR location."""
+
+class SimpleFile(ExptFile):
+    """
+    A class containing basic folder information.
+
+    Attributes
+    ----------
+    inpath
+        Folder from which the data are taken.
+    outpath
+        Folder where the data are copied to.
+    timestamp
+        A timestamp of the data.
+
+    """
+
+    def __init__(
+        self,
+        inpath: Path,
+        outpath: Path,
+        timestamp: float,
+    ) -> None:
+        """
+        Initialise data.
+
+        Parameters
+        ----------
+        inpath
+            Folder from which the data are taken.
+        outpath
+            Folder where the data are copied to.
+        timestamp
+            A timestamp of the data.
+
+        """
+        self.inpath = inpath
+        self.outpath = outpath
+        self.timestamp = timestamp
+
+    @classmethod
+    def copy_from_instrument(
+        cls,
+        inpath: Path,
+        outdir: Path,
+    ) -> "SimpleFile":
+        """
+        This function will perform the renaming of the directory tree.
+
+        Parameters
+        ----------
+        inpath
+            Path to the data folder to be processed.
+        outdir
+            Output directory for the resulting new directory tree.
+
+        """
+
+        outpath = outdir / inpath.name
+
+        if not outpath.exists():
+            if inpath.is_file():
+                copyfile(inpath, outpath)
+            elif inpath.is_dir():
+                copytree(inpath, outpath)
+
+        file = cls(
+            inpath=inpath,
+            outpath=outpath,
+            timestamp=inpath.stat().st_mtime,
+        )
+
+        return file
+
+    def to_toml_string(self) -> str:
+        """Get SimpleFile as a serialisable TOML string."""
+        inpath = str(self.inpath).replace("\\", "/")
+        outpath = str(self.outpath).replace("\\", "/")
+        toml_string = "\n".join(
+            [
+                "[[processed]]",
+                f'inpath = "{inpath}"',
+                f'outpath = "{outpath}"',
+                f"timestamp = {self.timestamp}",
+            ]
+        )
+
+        return toml_string
+
+
+class MIFNMRFolder(ExptFile):
     """
     A class containing basic NMR folder information.
 
@@ -139,7 +242,7 @@ class NMRFolder:
                                     )
                                     sample_id = "UNKNOWN"
                                 break
-        except Exception:
+        except (OSError, FileNotFoundError):
             logger.error("Error reading sample name: saving as UNKNOWN.")
             return "UNKNOWN"
 
@@ -176,16 +279,16 @@ class NMRFolder:
             logger.error("Experiment name not found - aborted!")
             return "UNKNOWN"
 
-        except Exception:
+        except (OSError, FileNotFoundError):
             logger.error("Error reading experiment name: saving as UNKNOWN.")
             return "UNKNOWN"
 
     @classmethod
-    def from_mif(
+    def copy_from_instrument(
         cls,
         inpath: Path,
         outdir: Path,
-    ) -> "NMRFolder":
+    ) -> "MIFNMRFolder":
         """
         Initialise NMRFolder from the MIF NMR location.
 
@@ -199,8 +302,8 @@ class NMRFolder:
             Output directory for the resulting new directory tree.
 
         """
-        nmr_sample = NMRFolder.get_sample_name(inpath)
-        experiment = NMRFolder.get_experiment_name(inpath)
+        nmr_sample = MIFNMRFolder.get_sample_name(inpath)
+        experiment = MIFNMRFolder.get_experiment_name(inpath)
 
         expno = 10
         for nmr_exp in (outdir / nmr_sample).glob("*"):
@@ -274,20 +377,20 @@ class NMRFolder:
         return toml_string
 
 
-class GlynWatcher:
+class Watcher:
     """
     A class containing the watcher status.
 
     Attributes
     ----------
     inpath
-        Source from which the NMR data are taken.
+        Source from which the data are taken.
     outpath
-        Destination of processed NMR folders.
+        Destination of processed folders.
     toml_path
         A path to dump file with the watcher status.
     last_timestamp
-        A timestamp of the last processed NMR folder.
+        A timestamp of the last processed folder.
 
     """
 
@@ -298,6 +401,7 @@ class GlynWatcher:
         toml_path: Path,
         last_timestamp: float = 0,
         clean: Optional[bool] = False,
+        exptfile_cls=SimpleFile,
     ) -> None:
         """
         Initialise the watcher.
@@ -305,13 +409,13 @@ class GlynWatcher:
         Parameters
         ----------
         inpath
-            Source from which the NMR data are taken.
+            Source from which the data are taken.
         outpath
-            Destination of processed NMR folders.
+            Destination of processed folders.
         toml_path
             A path to dump file with the watcher status.
         last_timestamp
-            A timestamp of the last processed NMR folder.
+            A timestamp of the last processed folder.
         processed_folders
             A list of already processed folders.
         clean
@@ -322,6 +426,7 @@ class GlynWatcher:
         self.outpath = outpath
         self.toml_path = toml_path
         self.last_timestamp = last_timestamp
+        self.exptfile_cls = exptfile_cls
 
         inpath_str = str(self.inpath).replace("\\", "/")
         outpath_str = str(self.outpath).replace("\\", "/")
@@ -351,9 +456,10 @@ class GlynWatcher:
     def from_toml(
         cls,
         toml_path: Path,
-        default_inpath: str = "MIF_NMR",
-        default_outpath: str = "AIC_NMR",
-    ) -> "GlynWatcher":
+        default_inpath: str = "test_inpath",
+        default_outpath: str = "test_outpath",
+        exptfile_cls= SimpleFile,  # <-- add this
+    ) -> "Watcher":
         """
         Initialise the watcher from a TOML dump.
 
@@ -362,9 +468,9 @@ class GlynWatcher:
         toml_path
             A path to the TOML dump.
         default_inpath, optional
-            Only used for error handling, by default Path("MIF_NMR")
+            Only used for error handling, by default Path("test_inpath")
         default_outpath, optional
-            Only used for error handling, by default Path("AIC_NMR")
+            Only used for error handling, by default Path("test_outpath")
 
         """
         try:
@@ -375,10 +481,11 @@ class GlynWatcher:
                 inpath=Path(toml_data["watcher"]["inpath"]),
                 outpath=Path(toml_data["watcher"]["outpath"]),
                 toml_path=toml_path,
+                exptfile_cls=exptfile_cls,  # <-- pass here
             )
 
             watcher.last_timestamp = max(
-                folder["timestamp"] for folder in toml_data["processed"]
+                folder["timestamp"] for folder in toml_data.get("processed", [])
             )
 
             del toml_data
@@ -389,32 +496,39 @@ class GlynWatcher:
                 inpath=Path(default_inpath),
                 outpath=Path(default_outpath),
                 toml_path=toml_path,
+                exptfile_cls=exptfile_cls,  # <-- pass here
             )
 
         return watcher
 
-    def process_folder(
+    def process_data(
         self,
-        nmr_folder_path: Path,
+        data_path: Path,
     ) -> None:
         """
-        Process an NMR folder.
+        Process a data folder/file.
 
         Parameters
         ----------
-        NMRFolder
-            The NMR folder to be processed.
+        data_path
+            The folder/file to be processed.
 
         """
-        nmr_folder = NMRFolder.from_mif(
-            inpath=nmr_folder_path,
+        nmr_folder = self.exptfile_cls.copy_from_instrument(  # <-- use the class
+            inpath=data_path,
             outdir=self.outpath,
         )
-        self.last_timestamp = nmr_folder_path.stat().st_mtime
+        self.last_timestamp = data_path.stat().st_mtime
         logger.debug("Last timestamp is: %s.", self.last_timestamp)
         with open(self.toml_path, mode="a", encoding="utf-8") as f:
             f.write(nmr_folder.to_toml_string() + "\n\n")
 
+
+EXPTFILE_TYPES = {
+    "mifnmr": MIFNMRFolder,
+    "simple": SimpleFile,
+    # Add other experiment file types here as needed
+}
 
 def parse_arguments() -> argparse.Namespace:
     """Parse CLI arguments."""
@@ -435,6 +549,13 @@ def parse_arguments() -> argparse.Namespace:
         "outpath",
         type=Path,
         help="A path to the output data directory.",
+    )
+
+    parser.add_argument(
+        "--exptfile-type",
+        type=str,
+        choices=EXPTFILE_TYPES.keys(),
+        help="Type of experiment file to process (default: mifnmr).",
     )
 
     parser.add_argument(
@@ -490,6 +611,15 @@ def parse_arguments() -> argparse.Namespace:
         help="End date for folder conversion (YYYY-MM-DD).",
     )
 
+    parser.add_argument(
+        "--search-depth",
+        type=int,
+        default=2,
+        help="Depth for searching for input folders (default: 2, i.e., */*).",
+    )
+
+
+
     return parser.parse_args()
 
 
@@ -501,53 +631,65 @@ def main(
     start_date: datetime,
     end_date: datetime,
     clean_run: bool,
+    glob_depth: int,
+    exptfile_type: str,
 ) -> None:
     """
-    Execute the NMR folder processing.
+    Execute the folder processing.
 
     Parameters
     ----------
     inpath
-        A Path to the MIF NMR folders.
+        A Path to the input folders.
     outpath
-        A Path to the destination NMR folder.
+        A Path to the destination folder.
     toml_path
         A Path to the TOML watcher dump file.
     wait_time
         Wait time while watching.
     start_date
-        Start date for NMR processing.
+        Start date for processing.
     end_date
-        End date for NMR processing,
+        End date for processing,
     clean_run
         If True, will ignore any log/dump and start from scratch.
-
+    glob_depth
+        Depth for globbing input folders.
+    exptfile_type
+        Type of experiment file to process.
     """
 
     logger.info(
         "Will use the watcher dumped in %s (if exists).", toml_path.name
     )
 
+    exptfile_cls = EXPTFILE_TYPES[exptfile_type]
+
     if clean_run or not toml_path.exists():
-        watcher = GlynWatcher(
+        watcher = Watcher(
             inpath=inpath,
             outpath=outpath,
             toml_path=toml_path,
             clean=True,
+            exptfile_cls=exptfile_cls,
         )
         logger.info("Empty watcher created.")
 
     else:
-        watcher = GlynWatcher.from_toml(
+        watcher = Watcher.from_toml(
             toml_path,
             default_inpath=str(inpath),
             default_outpath=str(outpath),
+            exptfile_cls=exptfile_cls, 
         )
         logger.info("Watcher loaded.")
         logger.info(
             "Latest processed folder is from %s.",
             datetime.fromtimestamp(watcher.last_timestamp).strftime('%c')
         )
+
+    # Build the glob pattern based on depth
+    glob_pattern = "*/" * (glob_depth - 1) + "*"
 
     try:
         # Identify changes since running the script last time.
@@ -556,7 +698,7 @@ def main(
         logger.debug("End date is set at %s.", end_date.timestamp())
 
         infiles = []
-        for folder in watcher.inpath.glob("*/*"):
+        for folder in watcher.inpath.glob(glob_pattern):
             logger.debug("Found %s/%s.", folder.parent.name, folder.name)
             timestamp = folder.stat().st_mtime
             ctime = datetime.fromtimestamp(watcher.last_timestamp)
@@ -594,7 +736,7 @@ def main(
             logger.info(
                 "Processing %s/%s.", process_path.parent.name, process_path.name
             )
-            watcher.process_folder(nmr_folder_path=process_path)
+            watcher.process_data(data_path=process_path)
             to_process.task_done()
             logger.info("Processing done. Left: %d tasks.", to_process.qsize())
 
@@ -605,8 +747,9 @@ def main(
         while True:
             time.sleep(wait_time)
             logger.debug("Looking for changes.")
-            for folder in watcher.inpath.glob("*/*"):
-                if folder.stat().st_mtime > watcher.last_timestamp:
+            for folder in watcher.inpath.glob(glob_pattern):
+                logger.debug("Found folder: %s Modifed at: %s", folder, folder.stat().st_mtime)
+                if (folder.stat().st_mtime > watcher.last_timestamp):
                     logger.info(
                         "New folder identified: %s/%s",
                         folder.parent.name, folder.name
@@ -618,7 +761,7 @@ def main(
                 logger.info(
                     "Processing %s/%s.", proc_path.parent.name, proc_path.name
                 )
-                watcher.process_folder(nmr_folder_path=proc_path)
+                watcher.process_data(data_path=proc_path)
                 to_process.task_done()
                 logger.info("Folder processing finished.")
 
@@ -629,7 +772,8 @@ def main(
         logger.info("Process stopped.")
 
 
-if __name__ == "__main__":
+def cli():
+    """Command line interface for the script."""
     args = parse_arguments()
 
     logging.basicConfig(
@@ -648,4 +792,9 @@ if __name__ == "__main__":
         start_date=args.start,
         end_date=args.end,
         clean_run=args.clean,
+        glob_depth=args.search_depth,
+        exptfile_type=args.exptfile_type,
     )
+
+if __name__ == "__main__":
+    cli()
