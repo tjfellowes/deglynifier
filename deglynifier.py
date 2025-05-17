@@ -12,7 +12,7 @@ from shutil import copytree
 from typing import Optional
 
 __author__ = "Filip T. Szczypiński"
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 logging.captureWarnings(True)
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ class NMRFolder:
         sample_id = "UNKNOWN"
         orig_path = nmr_path / "orig"
 
-        logging.debug(f"Trying to open {orig_path} to find the sample ID.")
+        logging.debug("Trying to open %s to find the sample ID.", orig_path)
 
         try:
             with orig_path.open() as file:
@@ -131,7 +131,7 @@ class NMRFolder:
                                 sample_id = m.group(1).strip()
                                 if sample_id:
                                     logger.info(
-                                        f"Using the NAME field ({sample_id})."
+                                        "Using the NAME field (%s).", sample_id
                                     )
                                 else:
                                     logger.error(
@@ -170,7 +170,7 @@ class NMRFolder:
                     m = re.search(r"##\$EXP= <(.*)>", line)
                     if m is not None:
                         exp_name = m.group(1)
-                        logger.info(f"Experiment type is: {exp_name}.")
+                        logger.info("Experiment type is: %s.", exp_name)
                         return strip_illegal_characters(exp_name)
 
             logger.error("Experiment name not found - aborted!")
@@ -253,7 +253,7 @@ class NMRFolder:
                 "",
             ]
         )
-        with open(toml_path, "a") as f:
+        with open(toml_path, "a", encoding="utf-8") as f:
             f.write(new_exp)
 
     def to_toml_string(self) -> str:
@@ -326,7 +326,7 @@ class GlynWatcher:
         inpath_str = str(self.inpath).replace("\\", "/")
         outpath_str = str(self.outpath).replace("\\", "/")
         if not toml_path.exists():
-            with open(toml_path, mode="a") as f:
+            with open(toml_path, mode="a", encoding="utf-8") as f:
                 toml_str = "\n".join(
                     [
                         "[watcher]",
@@ -337,7 +337,7 @@ class GlynWatcher:
                 f.write(toml_str + "\n\n")
 
         if clean:
-            with open(toml_path, mode="w") as f:
+            with open(toml_path, mode="w", encoding="utf-8") as f:
                 toml_str = "\n".join(
                     [
                         "[watcher]",
@@ -383,8 +383,8 @@ class GlynWatcher:
 
             del toml_data
 
-        except Exception:
-            logger.error("TOML decoding failed: starting from scratch!")
+        except (KeyError, tomllib.TOMLDecodeError, OSError) as e:
+            logger.error("TOML decoding failed: starting from scratch! (%s)", e)
             watcher = cls(
                 inpath=Path(default_inpath),
                 outpath=Path(default_outpath),
@@ -411,8 +411,8 @@ class GlynWatcher:
             outdir=self.outpath,
         )
         self.last_timestamp = nmr_folder_path.stat().st_mtime
-        logger.debug(f"Last timestamp is: {self.last_timestamp}.")
-        with open(self.toml_path, mode="a") as f:
+        logger.debug("Last timestamp is: %s.", self.last_timestamp)
+        with open(self.toml_path, mode="a", encoding="utf-8") as f:
             f.write(nmr_folder.to_toml_string() + "\n\n")
 
 
@@ -525,7 +525,7 @@ def main(
     """
 
     logger.info(
-        f"Will use the watcher dumped in {toml_path.name} (if exists)."
+        "Will use the watcher dumped in %s (if exists).", toml_path.name
     )
 
     if clean_run or not toml_path.exists():
@@ -545,22 +545,22 @@ def main(
         )
         logger.info("Watcher loaded.")
         logger.info(
-            "Latest processed folder is from "
-            f"{datetime.fromtimestamp(watcher.last_timestamp).strftime('%c')}."
+            "Latest processed folder is from %s.",
+            datetime.fromtimestamp(watcher.last_timestamp).strftime('%c')
         )
 
     try:
         # Identify changes since running the script last time.
-        logger.info(f"Identifying data folders in {inpath.name}.")
-        logger.debug(f"Start date is set at {start_date.timestamp()}.")
-        logger.debug(f"End date is set at {end_date.timestamp()}.")
+        logger.info("Identifying data folders in %s.", inpath.name)
+        logger.debug("Start date is set at %s.", start_date.timestamp())
+        logger.debug("End date is set at %s.", end_date.timestamp())
 
         infiles = []
         for folder in watcher.inpath.glob("*/*"):
-            logger.debug(f"Found {folder.parent.name}/{folder.name}.")
+            logger.debug("Found %s/%s.", folder.parent.name, folder.name)
             timestamp = folder.stat().st_mtime
             ctime = datetime.fromtimestamp(watcher.last_timestamp)
-            logger.debug(f"Folder creation date is {ctime.strftime('%c')}.")
+            logger.debug("Folder creation date is %s.", ctime.strftime('%c'))
 
             if timestamp <= watcher.last_timestamp:
                 logger.debug("Folder predates latest processed folder.")
@@ -574,7 +574,7 @@ def main(
             else:
                 infiles.append(folder)
                 logger.info(
-                    f"Added {folder.parent.name}/{folder.name} to the stack."
+                    "Added %s/%s to the stack.", folder.parent.name, folder.name
                 )
         infiles = sorted(infiles, key=lambda x: x.stat().st_mtime)
 
@@ -587,20 +587,20 @@ def main(
 
         del infiles
 
-        logger.info(f"Will process {to_process.qsize()} folders.")
+        logger.info("Will process %d folders.", to_process.qsize())
 
         while not to_process.empty():
             process_path = to_process.get()
             logger.info(
-                f"Processing {process_path.parent.name}/{process_path.name}."
+                "Processing %s/%s.", process_path.parent.name, process_path.name
             )
             watcher.process_folder(nmr_folder_path=process_path)
             to_process.task_done()
-            logger.info(f"Processing done. Left: {to_process.qsize()} tasks.")
+            logger.info("Processing done. Left: %d tasks.", to_process.qsize())
 
         # Watch and process new folders as they come.
         logger.info(
-            f"Will check for changes every {wait_time/60:.2f} minutes."
+            "Will check for changes every %.2f minutes.", wait_time / 60
         )
         while True:
             time.sleep(wait_time)
@@ -608,15 +608,15 @@ def main(
             for folder in watcher.inpath.glob("*/*"):
                 if folder.stat().st_mtime > watcher.last_timestamp:
                     logger.info(
-                        "New folder identified: "
-                        f"{folder.parent.name}/{folder.name}"
+                        "New folder identified: %s/%s",
+                        folder.parent.name, folder.name
                     )
                     to_process.put(folder)
 
             while not to_process.empty():
                 proc_path = to_process.get()
                 logger.info(
-                    f"Processing {proc_path.parent.name}/{proc_path.name}."
+                    "Processing %s/%s.", proc_path.parent.name, proc_path.name
                 )
                 watcher.process_folder(nmr_folder_path=proc_path)
                 to_process.task_done()
